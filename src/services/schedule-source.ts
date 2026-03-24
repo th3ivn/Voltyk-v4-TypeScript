@@ -15,6 +15,21 @@ interface GitBranchResponse {
   };
 }
 
+interface QueueRecordInput {
+  regionId?: unknown;
+  queueLabel?: unknown;
+  imageUrl?: unknown;
+  image?: unknown;
+  imagePath?: unknown;
+  statusText?: unknown;
+  status?: unknown;
+}
+
+interface RegionFilePayload {
+  regionId?: unknown;
+  queues?: unknown;
+}
+
 interface NormalizedRegionRecord {
   regionId: string;
   queueLabel: string;
@@ -42,10 +57,7 @@ export class ScheduleSource {
       throw new Error('Schedule source has no valid regions');
     }
 
-    return {
-      updatedAtUnix,
-      regions,
-    };
+    return { updatedAtUnix, regions };
   }
 
   async fetch(): Promise<RegionScheduleImage[]> {
@@ -54,50 +66,49 @@ export class ScheduleSource {
   }
 
   private async fetchRepoUpdatedAtUnix(): Promise<number> {
-    const url = `https://api.github.com/repos/${this.sourceConfig.owner}/${this.sourceConfig.repo}/branches/${this.sourceConfig.branch}`;
-    const json = await this.fetchJson<GitBranchResponse>(url);
-    const dateIso = json.commit?.commit?.committer?.date;
+    const branchUrl = `https://api.github.com/repos/${this.sourceConfig.owner}/${this.sourceConfig.repo}/branches/${this.sourceConfig.branch}`;
+    const branch = await this.fetchJson<GitBranchResponse>(branchUrl);
 
-    if (typeof dateIso !== 'string') {
+    const commitDate = branch.commit?.commit?.committer?.date;
+    if (typeof commitDate !== 'string') {
       throw new Error('Schedule source branch payload has no commit date');
     }
 
-    const unix = Math.floor(new Date(dateIso).getTime() / 1000);
-    if (!Number.isFinite(unix) || unix <= 0) {
+    const updatedAtUnix = Math.floor(new Date(commitDate).getTime() / 1000);
+    if (!Number.isFinite(updatedAtUnix) || updatedAtUnix <= 0) {
       throw new Error('Schedule source has invalid commit date');
     }
 
-    return unix;
+    return updatedAtUnix;
   }
 
   private async fetchDataEntries(): Promise<NormalizedRegionRecord[]> {
-    const paths = await this.listDataFilePaths();
-    const unique = new Map<string, NormalizedRegionRecord>();
+    const filePaths = await this.listDataFilePaths();
+    const uniqueEntries = new Map<string, NormalizedRegionRecord>();
 
-    for (const filePath of paths) {
+    for (const filePath of filePaths) {
       const payload = await this.fetchJson<unknown>(this.buildRawUrl(filePath));
-      const regionFallback = extractRegionFromPath(filePath, this.sourceConfig.dataBasePath);
-      const records = normalizeSourcePayload(payload, regionFallback, this.sourceConfig, filePath);
+      const regionFallback = regionIdFromDataPath(filePath, this.sourceConfig.dataBasePath);
+      const records = parseRecordsFromDataFile(payload, regionFallback, this.sourceConfig);
 
       for (const record of records) {
-        unique.set(`${record.regionId}:${record.queueLabel}`, record);
+        uniqueEntries.set(`${record.regionId}:${record.queueLabel}`, record);
       }
     }
 
-    return [...unique.values()];
+    return [...uniqueEntries.values()];
   }
 
   private async listDataFilePaths(): Promise<string[]> {
-    const url = `https://api.github.com/repos/${this.sourceConfig.owner}/${this.sourceConfig.repo}/git/trees/${this.sourceConfig.branch}?recursive=1`;
-    const json = await this.fetchJson<GitTreeResponse>(url);
+    const treeUrl = `https://api.github.com/repos/${this.sourceConfig.owner}/${this.sourceConfig.repo}/git/trees/${this.sourceConfig.branch}?recursive=1`;
+    const tree = await this.fetchJson<GitTreeResponse>(treeUrl);
 
-    const basePath = trimSlashes(this.sourceConfig.dataBasePath);
-    const tree = Array.isArray(json.tree) ? json.tree : [];
+    const dataBasePath = trimSlashes(this.sourceConfig.dataBasePath);
 
-    return tree
+    return (Array.isArray(tree.tree) ? tree.tree : [])
       .filter((node) => node.type === 'blob' && typeof node.path === 'string')
       .map((node) => node.path as string)
-      .filter((path) => path.startsWith(`${basePath}/`) && path.endsWith('.json'))
+      .filter((path) => path.startsWith(`${dataBasePath}/`) && path.endsWith('.json'))
       .sort((left, right) => left.localeCompare(right));
   }
 
@@ -110,69 +121,58 @@ export class ScheduleSource {
     return (await response.json()) as T;
   }
 
-  private buildRawUrl(filePath: string): string {
+  private buildRawUrl(path: string): string {
     const template = this.sourceConfig.rawUrlTemplate ?? 'https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}';
 
     return template
       .replace('{owner}', this.sourceConfig.owner)
       .replace('{repo}', this.sourceConfig.repo)
       .replace('{branch}', this.sourceConfig.branch)
-      .replace('{path}', filePath);
+      .replace('{path}', path);
   }
 }
 
-function normalizeSourcePayload(
+function parseRecordsFromDataFile(
   payload: unknown,
   regionFallback: string,
   sourceConfig: RepoSourceConfig,
-  filePath: string,
 ): NormalizedRegionRecord[] {
-  const records: NormalizedRegionRecord[] = [];
-  const visited = new Set<unknown>();
-  const queue: unknown[] = [payload];
-
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (!current || typeof current !== 'object') {
-      continue;
-    }
-
-    if (visited.has(current)) {
-      continue;
-    }
-    visited.add(current);
-
-    const normalized = tryNormalizeRecord(current as Record<string, unknown>, regionFallback, sourceConfig, filePath);
-    if (normalized) {
-      records.push(normalized);
-    }
-
-    for (const value of Object.values(current)) {
-      if (value && typeof value === 'object') {
-        queue.push(value);
-      }
-    }
+  if (Array.isArray(payload)) {
+    return payload
+      .map((entry) => parseQueueRecord(entry, regionFallback, sourceConfig))
+      .filter((entry): entry is NormalizedRegionRecord => entry !== null);
   }
 
-  return records;
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+
+  const regionFile = payload as RegionFilePayload;
+
+  if (Array.isArray(regionFile.queues)) {
+    const regionFromFile = toNonEmptyString(regionFile.regionId) ?? regionFallback;
+    return regionFile.queues
+      .map((entry) => parseQueueRecord(entry, regionFromFile, sourceConfig))
+      .filter((entry): entry is NormalizedRegionRecord => entry !== null);
+  }
+
+  const single = parseQueueRecord(payload, regionFallback, sourceConfig);
+  return single ? [single] : [];
 }
 
-function tryNormalizeRecord(
-  record: Record<string, unknown>,
-  regionFallback: string,
-  sourceConfig: RepoSourceConfig,
-  filePath: string,
-): NormalizedRegionRecord | null {
-  const queueLabel = pickFirstString(record, ['queueLabel', 'queue', 'queueName', 'group']);
-  const statusText = pickFirstString(record, ['statusText', 'status', 'message', 'text']);
-  const imageRef = pickFirstString(record, ['imageUrl', 'image', 'imagePath', 'image_file']);
-
-  if (!queueLabel || !statusText || !imageRef) {
+function parseQueueRecord(input: unknown, regionFallback: string, sourceConfig: RepoSourceConfig): NormalizedRegionRecord | null {
+  if (!input || typeof input !== 'object') {
     return null;
   }
 
-  const regionId = pickFirstString(record, ['regionId', 'region', 'regionSlug']) ?? regionFallback;
-  if (!regionId) {
+  const record = input as QueueRecordInput;
+  const regionId = toNonEmptyString(record.regionId) ?? regionFallback;
+  const queueLabel = normalizeLabel(record.queueLabel);
+  const statusText = toNonEmptyString(record.statusText) ?? toNonEmptyString(record.status);
+  const imageRef =
+    toNonEmptyString(record.imageUrl) ?? toNonEmptyString(record.imagePath) ?? toNonEmptyString(record.image);
+
+  if (!regionId || !queueLabel || !statusText || !imageRef) {
     return null;
   }
 
@@ -180,20 +180,18 @@ function tryNormalizeRecord(
     regionId,
     queueLabel,
     statusText,
-    imageUrl: resolveImageUrl(imageRef, sourceConfig, filePath),
+    imageUrl: resolveImageUrl(imageRef, sourceConfig),
   };
 }
 
-function resolveImageUrl(imageRef: string, sourceConfig: RepoSourceConfig, filePath: string): string {
+function resolveImageUrl(imageRef: string, sourceConfig: RepoSourceConfig): string {
   if (imageRef.startsWith('https://') || imageRef.startsWith('http://')) {
     return imageRef;
   }
 
   const normalizedImagePath = trimSlashes(imageRef);
   const imagesBasePath = trimSlashes(sourceConfig.imagesBasePath);
-  const fullPath = normalizedImagePath.includes('/')
-    ? normalizedImagePath
-    : `${imagesBasePath}/${normalizedImagePath}`;
+  const path = normalizedImagePath.includes('/') ? normalizedImagePath : `${imagesBasePath}/${normalizedImagePath}`;
 
   const template = sourceConfig.rawUrlTemplate ?? 'https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}';
 
@@ -201,32 +199,32 @@ function resolveImageUrl(imageRef: string, sourceConfig: RepoSourceConfig, fileP
     .replace('{owner}', sourceConfig.owner)
     .replace('{repo}', sourceConfig.repo)
     .replace('{branch}', sourceConfig.branch)
-    .replace('{path}', fullPath);
+    .replace('{path}', path);
 }
 
-function pickFirstString(input: Record<string, unknown>, keys: string[]): string | null {
-  for (const key of keys) {
-    const value = input[key];
-    if (typeof value === 'string') {
-      const normalized = value.trim();
-      if (normalized.length > 0) {
-        return normalized;
-      }
-    }
+function regionIdFromDataPath(filePath: string, dataBasePath: string): string {
+  const normalizedDataBasePath = trimSlashes(dataBasePath);
+  const relativePath = filePath.startsWith(`${normalizedDataBasePath}/`)
+    ? filePath.slice(normalizedDataBasePath.length + 1)
+    : filePath;
+  return relativePath.replace(/\.json$/i, '').replace(/\//g, '-');
+}
 
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return String(value);
-    }
+function toNonEmptyString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
   }
 
-  return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
-function extractRegionFromPath(filePath: string, dataBasePath: string): string {
-  const cleanBase = trimSlashes(dataBasePath);
-  const withoutPrefix = filePath.startsWith(`${cleanBase}/`) ? filePath.slice(cleanBase.length + 1) : filePath;
-  const withoutExtension = withoutPrefix.replace(/\.json$/i, '');
-  return trimSlashes(withoutExtension).replace(/\//g, '-');
+function normalizeLabel(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  return toNonEmptyString(value);
 }
 
 function trimSlashes(input: string): string {
