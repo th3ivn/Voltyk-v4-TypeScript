@@ -4,18 +4,18 @@ import { UserStore } from '../storage/user-store.js';
 import { ScheduleSource } from '../services/schedule-source.js';
 import { BroadcastQueue } from '../services/broadcast-queue.js';
 import { buildScheduleCaption } from '../utils/message-template.js';
-import { ADMIN_USER_IDS } from '../config/runtime.js';
+import { ADMIN_USER_IDS, type RepoSourceConfig } from '../config/runtime.js';
 
 interface Dependencies {
   botToken: string;
-  sourceJsonUrl: string;
+  sourceConfig: RepoSourceConfig;
   pollIntervalMs: number;
 }
 
-export function createBot({ botToken, sourceJsonUrl, pollIntervalMs }: Dependencies) {
+export function createBot({ botToken, sourceConfig, pollIntervalMs }: Dependencies) {
   const bot = new Bot(botToken);
   const userStore = new UserStore();
-  const source = new ScheduleSource(sourceJsonUrl);
+  const source = new ScheduleSource(sourceConfig);
   let lastBroadcastedUpdatedAtUnix: number | null = null;
   let currentPollIntervalMs = pollIntervalMs;
   let timer: ReturnType<typeof setInterval> | null = null;
