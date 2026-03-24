@@ -26,27 +26,13 @@ BOT_TOKEN=123456:ABC
 
 Фундаментальні налаштування зафіксовані в коді (`src/config/runtime.ts`):
 
-- `SOURCE_JSON_URL` — джерело графіків (зашито в код);
+- `SCHEDULE_SOURCE_CONFIG` — структурований repo-based конфіг джерела:
+  - `owner`, `repo`, `branch`;
+  - `dataBasePath` (зазвичай `data`);
+  - `imagesBasePath` (зазвичай `images`);
+  - `rawUrlTemplate` (опційно) — шаблон побудови абсолютних raw URL (`{owner}`, `{repo}`, `{branch}`, `{path}`).
 - `DEFAULT_POLL_INTERVAL_MS` — стартовий інтервал опитування;
 - `ADMIN_USER_IDS` — доступ до `/admin` (порожній Set = дозволено всім у Stage 1).
-
-## Source JSON contract
-
-`SOURCE_JSON_URL` має повертати JSON такого виду:
-
-```json
-{
-  "updatedAtUnix": 1770000000,
-  "regions": [
-    {
-      "regionId": "kyivska-oblast",
-      "queueLabel": "3.1",
-      "imageUrl": "https://example.com/kyiv-3-1.png",
-      "statusText": "✅ Відключень не заплановано"
-    }
-  ]
-}
-```
 
 ## Commands
 
@@ -70,7 +56,7 @@ BOT_TOKEN=123456:ABC
 
 ## Auto-updates flow
 
-- бот опитує `SOURCE_JSON_URL` за поточним polling-інтервалом;
+- бот опитує GitHub-репозиторій із `SCHEDULE_SOURCE_CONFIG` за поточним polling-інтервалом;
 - адмін може змінити інтервал через `/admin` без редеплою;
 - коли `updatedAtUnix` зростає, бот ставить задачі для всіх active-користувачів у чергу;
 - черга робить dedup та retry до 3 спроб на тимчасових помилках відправки.

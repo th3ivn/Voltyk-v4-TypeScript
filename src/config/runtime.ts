@@ -1,4 +1,19 @@
-export const SOURCE_JSON_URL = 'https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/voltyk-source.json';
+export interface RepoSourceConfig {
+  owner: string;
+  repo: string;
+  branch: string;
+  dataBasePath: string;
+  imagesBasePath: string;
+  rawUrlTemplate?: string;
+}
+
+export const SCHEDULE_SOURCE_CONFIG: RepoSourceConfig = {
+  owner: 'Baskerville42',
+  repo: 'outage-data-ua',
+  branch: 'main',
+  dataBasePath: 'data',
+  imagesBasePath: 'images',
+};
 
 export const DEFAULT_POLL_INTERVAL_MS = 60_000;
 

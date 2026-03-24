@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { createBot } from './bot/create-bot.js';
-import { DEFAULT_POLL_INTERVAL_MS, SOURCE_JSON_URL } from './config/runtime.js';
+import { DEFAULT_POLL_INTERVAL_MS, SCHEDULE_SOURCE_CONFIG } from './config/runtime.js';
 
 const botToken = process.env.BOT_TOKEN;
 
@@ -10,7 +10,7 @@ if (!botToken) {
 
 const { bot, startPolling } = createBot({
   botToken,
-  sourceJsonUrl: SOURCE_JSON_URL,
+  sourceConfig: SCHEDULE_SOURCE_CONFIG,
   pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
 });
 
